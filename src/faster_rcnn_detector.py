@@ -1,90 +1,137 @@
-# src/faster_rcnn_detector.py
-
 import torch
 import torchvision
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights
-from torchvision.transforms import functional as F
-import cv2
-import numpy as np
-import os
+import torchvision.transforms as T
+import logging
 
-# This is a simplified example. In a real scenario, you would handle custom datasets and training.
+# Configure logging
+logging.basicConfig(level=logging.INFO, format=\'%(asctime)s - %(levelname)s - %(message)s\')
+logger = logging.getLogger(__name__)
 
-def load_faster_rcnn_model():
+class FasterRCNNDetector:
     """
-    Loads a pre-trained Faster R-CNN model with a ResNet50-FPN backbone."""
-    # Use the COCO trained weights for demonstration
-    weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
-    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=weights)
-    model.eval() # Set the model to evaluation mode
-    print("Faster R-CNN model loaded successfully.")
-    return model, weights.transforms()
-
-def detect_objects_faster_rcnn(model, transform, image_path, threshold=0.7):
+    A class for performing object detection using the Faster R-CNN model
+    with a ResNet50-FPN backbone from torchvision. This class handles
+    loading a pre-trained model, fine-tuning (optional), and inference.
     """
-    Performs object detection using the loaded Faster R-CNN model.
+    def __init__(self, num_classes=91, pretrained=True, device=None):
+        """
+        Initializes the Faster R-CNN detector.
+        
+        Args:
+            num_classes (int): Number of output classes. Default is 91 for COCO.
+            pretrained (bool): If True, loads a model pre-trained on COCO.
+            device (str): The device to run the model on (‘cpu’ or ‘cuda’).
+                          If None, it automatically selects ‘cuda’ if available.
+        """
+        self.device = device if device else (‘cuda’ if torch.cuda.is_available() else ‘cpu’)
+        logger.info(f"Initializing FasterRCNNDetector on device: {self.device}")
 
-    Args:
-        model: The pre-trained Faster R-CNN model.
-        transform: The transformation function for the input image.
-        image_path (str): Path to the input image.
-        threshold (float): Confidence threshold for displaying detections.
+        if pretrained:
+            # Load a pre-trained model on COCO
+            self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=FasterRCNN_ResNet50_FPN_Weights.COCO_V1)
+            # Replace the classifier with a new one, that has num_classes which is user-defined
+            in_features = self.model.roi_heads.box_predictor.cls_score.in_features
+            self.model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+            logger.info(f"Loaded pre-trained Faster R-CNN with {num_classes} classes.")
+        else:
+            # Create a model from scratch
+            self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=None, num_classes=num_classes)
+            logger.info(f"Created Faster R-CNN model from scratch with {num_classes} classes.")
 
-    Returns:
-        numpy.ndarray: Image with bounding boxes and labels drawn.
-    """
-    image = cv2.imread(image_path)
-    if image is None:
-        print(f"Error: Could not load image {image_path}")
-        return None
+        self.model.to(self.device)
+        self.transform = T.Compose([T.ToTensor()])
 
-    # Convert image to RGB (PyTorch models expect RGB)
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    img_tensor = transform(image_rgb)
+    def train_one_epoch(self, data_loader, optimizer, lr_scheduler=None):
+        """
+        Trains the model for one epoch.
+        (Simplified for demonstration; a full training loop would be more complex)
+        """
+        self.model.train()
+        logger.info("Starting training epoch...")
+        for i, (images, targets) in enumerate(data_loader):
+            images = list(image.to(self.device) for image in images)
+            targets = [{k: v.to(self.device) for k, v in t.items()} for t in targets]
 
-    with torch.no_grad():
-        prediction = model([img_tensor])
+            loss_dict = self.model(images, targets)
+            losses = sum(loss for loss in loss_dict.values())
 
-    output_image = image.copy()
-    # COCO dataset classes (example, adjust if using different weights)
-    coco_names = [
-        '__background__', 'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',
-        'train', 'truck', 'boat', 'traffic light', 'fire hydrant', 'N/A', 'stop sign',
-        'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
-        'elephant', 'bear', 'zebra', 'giraffe', 'N/A', 'backpack', 'umbrella', 'N/A', 'N/A',
-        'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball',
-        'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket',
-        'bottle', 'N/A', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl',
-        'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog',
-        'pizza', 'donut', 'cake', 'chair', 'couch', 'potted plant', 'bed', 'N/A',
-        'dining table', 'N/A', 'N/A', 'toilet', 'N/A', 'tv', 'laptop', 'mouse', 'remote',
-        'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'N/A',
-        'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
-    ]
+            optimizer.zero_grad()
+            losses.backward()
+            optimizer.step()
 
-    for i in range(len(prediction[0]['labels'])):
-        score = prediction[0]['scores'][i].item()
-        if score > threshold:
-            label = coco_names[prediction[0]['labels'][i].item()]
-            box = prediction[0]['boxes'][i].tolist()
-            x1, y1, x2, y2 = [int(b) for b in box]
+            if lr_scheduler is not None:
+                lr_scheduler.step()
+            
+            if i % 50 == 0:
+                logger.info(f"Iteration {i}: Loss = {losses.item():.4f}")
+        logger.info("Training epoch finished.")
 
-            cv2.rectangle(output_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(output_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-    
-    output_path = f"detected_frcnn_{os.path.basename(image_path)}"
-    cv2.imwrite(output_path, output_image)
-    print(f"Detection result saved to {output_path}")
-    return output_image
+    @torch.no_grad()
+    def predict(self, image):
+        """
+        Performs inference on a single image.
+        
+        Args:
+            image (PIL.Image or numpy.ndarray): The input image.
+            
+        Returns:
+            dict: A dictionary containing ‘boxes’, ‘labels’, and ‘scores’.
+        """
+        self.model.eval()
+        img_tensor = self.transform(image).to(self.device)
+        prediction = self.model([img_tensor])
+        
+        # Move predictions to CPU for easier handling
+        output = {
+            ‘boxes’: prediction[0][‘boxes’].cpu().numpy(),
+            ‘labels’: prediction[0][‘labels’].cpu().numpy(),
+            ‘scores’: prediction[0][‘scores’].cpu().numpy()
+        }
+        logger.info(f"Detected {len(output[‘boxes’])} objects.")
+        return output
 
-if __name__ == '__main__':
-    # Create a dummy image for testing
-    dummy_image_path = "data/images/test_frcnn.jpg"
-    os.makedirs(os.path.dirname(dummy_image_path), exist_ok=True)
-    dummy_image = np.zeros((400, 600, 3), dtype=np.uint8)
-    cv2.putText(dummy_image, "Sample FRCNN Image", (100, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    cv2.imwrite(dummy_image_path, dummy_image)
+    def save_model(self, path):
+        """
+        Saves the model’s state dictionary.
+        """
+        torch.save(self.model.state_dict(), path)
+        logger.info(f"Model saved to {path}")
 
-    model_frcnn, transform_frcnn = load_faster_rcnn_model()
-    if model_frcnn:
-        detect_objects_faster_rcnn(model_frcnn, transform_frcnn, dummy_image_path)
+    def load_model(self, path):
+        """
+        Loads the model’s state dictionary.
+        """
+        self.model.load_state_dict(torch.load(path, map_location=self.device))
+        self.model.eval()
+        logger.info(f"Model loaded from {path}")
+
+if __name__ == "__main__":
+    # Example usage (requires a custom dataset for training)
+    print("FasterRCNNDetector class defined. To run, provide a dataset.")
+    # detector = FasterRCNNDetector(num_classes=2) # e.g., 1 for background, 1 for custom object
+    # # Dummy data for demonstration
+    # class DummyDataset(torch.utils.data.Dataset):
+    #     def __len__(self):
+    #         return 10
+    #     def __getitem__(self, idx):
+    #         img = torch.rand(3, 300, 400) # Dummy image
+    #         target = {
+    #             ‘boxes’: torch.tensor([[50, 50, 150, 150]], dtype=torch.float32),
+    #             ‘labels’: torch.tensor([1], dtype=torch.int64)
+    #         }
+    #         return img, target
+    # 
+    # data_loader = torch.utils.data.DataLoader(DummyDataset(), batch_size=2, shuffle=True)
+    # 
+    # params = [p for p in detector.model.parameters() if p.requires_grad]
+    # optimizer = torch.optim.SGD(params, lr=0.005, momentum=0.9, weight_decay=0.0005)
+    # 
+    # detector.train_one_epoch(data_loader, optimizer)
+    # 
+    # # Example prediction
+    # from PIL import Image
+    # dummy_image = Image.new(‘RGB’, (400, 300), color = ‘red’)
+    # predictions = detector.predict(dummy_image)
+    # print(predictions)
