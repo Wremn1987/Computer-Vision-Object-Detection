@@ -28,7 +28,6 @@ def detect_objects_yolo(model, image_path):
     Returns:
         numpy.ndarray: Image with bounding boxes and labels drawn.
     """
-    print(f"Detecting objects in {image_path} using {model}")
     image = cv2.imread(image_path)
     if image is None:
         print(f"Error: Could not load image {image_path}")
