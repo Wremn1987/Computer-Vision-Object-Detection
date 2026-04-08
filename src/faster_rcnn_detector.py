@@ -11,7 +11,8 @@ import os
 # This is a simplified example. In a real scenario, you would handle custom datasets and training.
 
 def load_faster_rcnn_model():
-    """Loads a pre-trained Faster R-CNN model with a ResNet50-FPN backbone."""
+    """
+    Loads a pre-trained Faster R-CNN model with a ResNet50-FPN backbone."""
     # Use the COCO trained weights for demonstration
     weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
     model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=weights)
